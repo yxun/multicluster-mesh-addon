@@ -291,6 +291,13 @@ func (r *Reconciler) doReconcile(ctx context.Context, mesh *meshv1alpha1.MultiCl
 		if err := r.ensureManagedServiceAccountCreated(ctx, mesh, &cluster); err != nil {
 			return reconcile.Result{}, fmt.Errorf("failed to create ManagedServiceAccounts: %w", err)
 		}
+
+		// Distribute remote secret for each cluster.
+		remoteSecretWork, err := r.ensureRemoteSecretDistributed(ctx, mesh, &cluster)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed to distribute remote secret on cluster %s: %w", cluster.Name, err)
+		}
+		klog.V(4).Infof("Applied remote secret ManifestWork %s/%s", remoteSecretWork.Namespace, remoteSecretWork.Name)
 	}
 
 	// Create certificates for each cluster if cert-manager is configured
