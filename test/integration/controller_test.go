@@ -858,8 +858,13 @@ var _ = Describe("MultiClusterMesh Controller", func() {
 				Expect(mwrset.Labels[meshcontroller.MeshNameLabel]).To(Equal(meshName))
 				Expect(mwrset.Labels[meshcontroller.MeshNamespaceLabel]).To(Equal(testNs))
 				Expect(mwrset.Spec.PlacementRefs[0].Name).To(Equal(placement.Name))
-				Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(1))
-				expectRemoteSecret(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests[0], clusterName, "istio-system")
+				Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(3))
+				for _, m := range mwrset.Spec.ManifestWorkTemplate.Workload.Manifests {
+					secret := &corev1.Secret{}
+					if err := unmarshalManifest(m, secret); err == nil {
+						expectRemoteSecret(m, clusterName, "istio-system")
+					}
+				}
 			})
 
 			It("should update ManifestWorkReplicaSet for newly added cluster", func() {
@@ -868,7 +873,7 @@ var _ = Describe("MultiClusterMesh Controller", func() {
 				expectMsaSecret(testNs, meshName, cluster2Name)
 
 				expectManifestWorkReplicaSetContent(meshName, testNs, func(g Gomega, mwrset *workv1alpha1.ManifestWorkReplicaSet) {
-					g.Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(2))
+					g.Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(6))
 				})
 				mwrset := expectManifestWorkReplicaSet(meshName, testNs)
 				for _, cluster := range []string{clusterName, cluster2Name} {
@@ -893,11 +898,15 @@ var _ = Describe("MultiClusterMesh Controller", func() {
 				updateClusterSetLabel(clusterName, "")
 
 				expectManifestWorkReplicaSetContent(meshName, testNs, func(g Gomega, mwrset *workv1alpha1.ManifestWorkReplicaSet) {
-					g.Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(1))
-
+					g.Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(3))
 				})
 				mwrset := expectManifestWorkReplicaSet(meshName, testNs)
-				expectRemoteSecret(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests[0], cluster2Name, "istio-system")
+				for _, m := range mwrset.Spec.ManifestWorkTemplate.Workload.Manifests {
+					secret := &corev1.Secret{}
+					if err := unmarshalManifest(m, secret); err == nil {
+						expectRemoteSecret(m, cluster2Name, "istio-system")
+					}
+				}
 			})
 
 			It("should cleanup ManifestWorkReplicaSet Manifests when removing all clusters from the ManagedClusterSet", func() {
@@ -942,8 +951,13 @@ var _ = Describe("MultiClusterMesh Controller", func() {
 				util.CreateManagedCluster(ctx, k8sClient, cluster2Name, testClusterSet)
 
 				mwrset := expectManifestWorkReplicaSet(meshName, testNs)
-				Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(1))
-				expectRemoteSecret(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests[0], clusterName, "istio-system")
+				Expect(mwrset.Spec.ManifestWorkTemplate.Workload.Manifests).To(HaveLen(3))
+				for _, m := range mwrset.Spec.ManifestWorkTemplate.Workload.Manifests {
+					secret := &corev1.Secret{}
+					if err := unmarshalManifest(m, secret); err == nil {
+						expectRemoteSecret(m, clusterName, "istio-system")
+					}
+				}
 			})
 		})
 

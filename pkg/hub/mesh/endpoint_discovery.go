@@ -1,17 +1,23 @@
 package mesh
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
+	"strings"
 
 	meshv1alpha1 "github.com/stolostron/multicluster-mesh-addon/pkg/apis/mesh/v1alpha1"
 	"github.com/stolostron/multicluster-mesh-addon/pkg/key"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/tools/clientcmd/api/latest"
@@ -26,6 +32,10 @@ import (
 
 func msaName(mesh *meshv1alpha1.MultiClusterMesh) string {
 	return fmt.Sprintf("%s-istio-reader-%s", mesh.Namespace, mesh.Name)
+}
+
+func msaClusterRoleName(mesh *meshv1alpha1.MultiClusterMesh) string {
+	return fmt.Sprintf("%s-istio-reader-clusterrole-%s-%s", mesh.Namespace, mesh.Name, mesh.Spec.ControlPlane.Namespace)
 }
 
 // ensureManagedServiceAccount applies the desired ManagedServiceAccount state for a specific cluster using mesh's TokenValidity.
@@ -150,6 +160,22 @@ func (r *Reconciler) ensureRemoteSecretDistribution(ctx context.Context, mesh *m
 		manifests = append(manifests, workv1.Manifest{
 			RawExtension: runtime.RawExtension{Object: remoteSecret},
 		})
+
+		clusterRole, err := loadClusterRoleTemplate(msaClusterRoleName(mesh))
+		if err != nil {
+			return fmt.Errorf("failed to load Istio reader ClusterRole for cluster %s: %w", cluster.Name, err)
+		}
+		manifests = append(manifests, workv1.Manifest{
+			RawExtension: runtime.RawExtension{Object: clusterRole},
+		})
+
+		clusterRoleBinding, err := loadClusterRoleBindingTemplate(msaClusterRoleName(mesh), msaName, mesh.Spec.ControlPlane.Namespace)
+		if err != nil {
+			return fmt.Errorf("failed to load Istio reader ClusterRoleBinding for cluster %s: %w", cluster.Name, err)
+		}
+		manifests = append(manifests, workv1.Manifest{
+			RawExtension: runtime.RawExtension{Object: clusterRoleBinding},
+		})
 	}
 
 	mwrset := &workv1alpha1.ManifestWorkReplicaSet{
@@ -226,4 +252,79 @@ func buildIstioRemoteSecret(tokenSecret *corev1.Secret, clusterName, server, nam
 		Data: map[string][]byte{clusterName: buf.Bytes()},
 		Type: corev1.SecretTypeOpaque,
 	}, nil
+}
+
+var (
+	readerClusterRoleURL        = "https://raw.githubusercontent.com/istio/istio/refs/heads/master/manifests/charts/istio-control/istio-discovery/templates/reader-clusterrole.yaml"
+	readerClusterRoleBindingURL = "https://raw.githubusercontent.com/istio/istio/refs/heads/master/manifests/charts/istio-control/istio-discovery/templates/reader-clusterrolebinding.yaml"
+)
+
+func removeTemplateLines(input string) string {
+	var sb strings.Builder
+	scanner := bufio.NewScanner(strings.NewReader(input))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// check if line contains template syntax
+		if !strings.Contains(line, "{{") {
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
+// downloadIstioReaderTemplates gets helm templates from upstream Istio reader-clusterrole and reader-clusterrolebinding
+func downloadIstioReaderTemplates(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get istio-discovery/templates: %w", err)
+	}
+	defer resp.Body.Close()
+
+	template, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	return template, nil
+}
+
+func loadClusterRoleTemplate(roleName string) (*rbacv1.ClusterRole, error) {
+	template, err := downloadIstioReaderTemplates(readerClusterRoleURL)
+	if err != nil {
+		return nil, err
+	}
+	// filter out template lines
+	manifest := removeTemplateLines(string(template))
+	clusterRole := &rbacv1.ClusterRole{}
+	if err := yaml.Unmarshal([]byte(manifest), clusterRole); err != nil {
+		return nil, fmt.Errorf("Failed to unmarshal ClusterRole template: %w", err)
+	}
+
+	clusterRole.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ClusterRole"}
+	clusterRole.Name = roleName
+	return clusterRole, nil
+}
+
+func loadClusterRoleBindingTemplate(roleName, saName, saNamespace string) (*rbacv1.ClusterRoleBinding, error) {
+	template, err := downloadIstioReaderTemplates(readerClusterRoleBindingURL)
+	if err != nil {
+		return nil, err
+	}
+	// filter out template lines
+	manifest := removeTemplateLines(string(template))
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
+	if err := yaml.Unmarshal([]byte(manifest), clusterRoleBinding); err != nil {
+		return nil, fmt.Errorf("Failed to unmarshal ClusterRoleBinding template: %w", err)
+	}
+
+	clusterRoleBinding.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ClusterRoleBinding"}
+	clusterRoleBinding.Name = roleName
+	clusterRoleBinding.RoleRef.Name = roleName
+	clusterRoleBinding.Subjects = []rbacv1.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      saName,
+		Namespace: saNamespace,
+	}}
+	return clusterRoleBinding, nil
 }
